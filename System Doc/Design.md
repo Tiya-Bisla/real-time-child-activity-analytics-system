@@ -1,222 +1,82 @@
-# System Design – Real-Time Child Activity Analytics System
+# System Design: Real-Time Child Activity Analytics System
 
-## 1. System Objective
+## 1. Overview
 
-Design a real-time vision system capable of:
+This system detects and analyzes child activities in real-time from classroom video feeds. It is designed for **operational deployment**, emphasizing low latency, scalability, and modularity rather than purely academic evaluation.  
 
-- Detecting children
-- Classifying posture/activity states
-- Running at real-time speed (≥30 FPS)
-- Generating structured analytics (counts, duration, engagement metrics)
+Key design priorities:
 
-The system is built for classroom/kindergarten environments where continuous monitoring and long-duration stability are required.
-
-This is not a research prototype. The design assumes deployment constraints.
+- **Real-time performance** – inference per frame <10 ms after warmup
+- **Modularity** – detection, tracking, activity analysis decoupled
+- **Scalability** – designed to accommodate multiple cameras and high frame-rate feeds
+- **Interpretability** – outputs structured activity summaries, visualizations, and performance metrics
 
 ---
 
 ## 2. High-Level Architecture
 
-### Data Flow
+Video Feed → Preprocessing → YOLOv8s Activity Detection → Tracking & Activity Aggregation → Metrics & Visualization
 
-Video Stream (30 FPS)
-        ↓
-Frame Extraction
-        ↓
-YOLOv8s Inference (Activity-Position Detection)
-        ↓
-Post-processing (Confidence Filtering, NMS)
-        ↓
-Tracking Layer (ID Assignment - Future Extension)
-        ↓
-Temporal Aggregation Engine
-        ↓
-Analytics Layer (Counts, Duration, Active vs Inactive)
-        ↓
-Storage / Visualization
+| Step                     | Description                               |
+|--------------------------|-------------------------------------------|
+| Video Feed               | Capture raw camera frames                  |
+| Preprocessing            | Resize, normalize, optional masking       |
+| YOLOv8s Detection        | Detect activity-position classes          |
+| Tracking & Aggregation   | Link detections across frames             |
+| Metrics & Visualization  | Generate charts & summaries               |
 
----
+**Components:**
 
-## 3. Core Design Decisions
-
-### 3.1 Why YOLOv8s (and not larger models)?
-
-Trade-offs considered:
-
-| Model | Accuracy | Speed | Deployment Feasibility |
-|-------|----------|-------|------------------------|
-| YOLOv8n | Faster | Lower | Good for edge |
-| YOLOv8s | Balanced | Real-time | Selected |
-| YOLOv8m/l | Higher | Slower | Heavy for scaling |
-
-Decision:
-- YOLOv8s gives strong accuracy (F1 = 86.6%) while maintaining 6–8 ms inference.
-- Enables real-time inference even with multiple camera scaling (with GPU batching).
-
-This was a system-level decision, not just a metric-based one.
+1. **Video Feed Input**
+   - Supports high-frame-rate cameras (30 FPS)
+   - Preprocessing handles resizing, normalization, and optional background masking
+2. **YOLOv8s Detection Module**
+   - Single-stage object detection for child activity + position
+   - Produces bounding boxes and class probabilities
+3. **Tracking & Aggregation**
+   - Associates detections across frames
+   - Aggregates activity counts, duration, and engagement statistics
+4. **Metrics & Visualization**
+   - Generates charts for active vs inactive ratios, per-activity duration
+   - Stores performance metrics for post-analysis
 
 ---
 
-## 4. Activity Modeling Strategy
+## 3. Design Decisions and Trade-offs
 
-Instead of separating:
-- Detection
-- Posture classification
-- Context classification
-
-The system uses **joint activity-position classes (9 total)**.
-
-Example:
-- Sitting_in_room
-- Sitting_in_room_and_mat
-- Running_in_room
-- etc.
-
-### Why?
-
-Pros:
-- Simpler inference pipeline
-- Single-stage prediction
-- Lower latency
-- No cascade model errors
-
-Cons:
-- Increased class complexity
-- Slightly higher data requirements
-
-The trade-off favors latency and architectural simplicity.
+| Decision | Rationale | Trade-offs |
+|----------|-----------|------------|
+| **YOLOv8s** | Lightweight, real-time optimized, high detection accuracy | Slightly lower precision vs larger YOLO variants |
+| **Single-camera first** | Simplifies implementation and latency measurement | Cross-camera consistency requires future work |
+| **SGD Optimizer** | Stable convergence, predictable learning | Slightly longer training than adaptive optimizers |
+| **Batch size = 16** | Balances GPU memory with throughput | Larger batches might speed up training but require more memory |
+| **640x640 input** | Optimal compromise between detection accuracy and inference speed | May lose small object fidelity |
+| **Results-only release** | Protects sensitive child data and model weights | Limits reproducibility for external developers |
 
 ---
 
-## 5. Real-Time Performance Design
+## 4. Performance & Scalability Considerations
 
-### Measured Inference
-- 6–8 ms per frame (post-warmup)
-- ~125–160 FPS theoretical throughput on NVIDIA A100
-
-Even accounting for:
-- I/O
-- Post-processing
-- Logging
-
-The system comfortably supports real-time 30 FPS streams.
-
-### Scalability Considerations
-
-If scaled to 8 cameras:
-
-Option A: Single GPU batching
-Option B: Multi-GPU parallel processing
-Option C: Edge + central analytics split
-
-This repository focuses on single-camera validated architecture, but design supports horizontal scaling.
+- **Inference speed:** 6–8 ms per frame on NVIDIA A100 after warmup → supports ~120–160 FPS if batched efficiently
+- **Memory footprint:** ~350 MB GPU memory per model; multi-camera scaling feasible with multiple A100s or batch scheduling
+- **Throughput vs latency:** Priority is low latency for real-time alerts; throughput optimizations (e.g., batch inference) are secondary
+- **Extensibility:** Modular architecture allows swapping detection models, adding tracking algorithms, or integrating edge devices
 
 ---
 
-## 6. Temporal Aggregation Engine
+## 5. Limitations
 
-Raw detections are frame-level.
-Analytics require time-level reasoning.
-
-Aggregation Logic:
-
-- Maintain per-activity counters
-- Accumulate duration using frame timestamps
-- Define active states (Running, Jumping)
-- Define inactive states (Sitting, Laying)
-
-This enables:
-- Energy estimation
-- Engagement modeling
-- Session-level summaries
-
-Design principle:
-Keep analytics decoupled from detection logic.
+- **Single-camera bias:** Current metrics assume a single view; occlusion may reduce accuracy
+- **Activity granularity:** Only 5 primary activities tracked; complex actions require future expansion
+- **Dataset coverage:** 6,489 images may not capture all classroom scenarios
+- **Deployment constraints:** Real-time inference requires GPU acceleration; CPU-only deployment will significantly increase latency
 
 ---
 
-## 7. Dataset-Aware Engineering Decisions
+## 6. Next Steps / Deployment Roadmap
 
-Constraints:
-- 6,489 labeled frames
-- Extracted from 30 FPS video
-- Risk of temporal correlation
-
-Mitigations:
-- Stratified train/validation split
-- Class balance monitoring
-- Precision-recall trade-off analysis
-
-System acknowledges:
-Accuracy alone is insufficient.
-Class-specific recall matters more in safety-critical monitoring.
-
----
-
-## 8. Failure Modes and Limitations
-
-Known challenges:
-
-1. Occlusion during group play
-2. Motion blur during fast running
-3. Similar posture confusion (standing vs slow walking)
-4. Camera-angle dependency
-
-Production Mitigations:
-- Multi-view setup (future extension)
-- Temporal smoothing
-- Confidence threshold tuning
-- Tracking integration
-
----
-
-## 9. Deployment Awareness
-
-### Runtime Environment
-- GPU-accelerated inference
-- Docker-compatible architecture (planned)
-- Model exportable to ONNX/TensorRT
-
-### Edge Deployment Possibility
-With quantization and TensorRT:
-- Potential Jetson-class deployment
-- Requires retraining with calibration
-
----
-
-## 10. Why This Is a System and Not Just a Model
-
-This repository separates:
-
-- Dataset design
-- Training configuration
-- Model reasoning
-- Performance evaluation
-- Analytics logic
-- Scalability considerations
-
-The focus is not just detection accuracy,
-but operational reliability and architectural clarity.
-
----
-
-## 11. Future Extensions
-
-- Multi-camera identity tracking
-- Real-time dashboard visualization
-- Teacher alerting system
-- Cross-session longitudinal analysis
-- Lightweight edge deployment version
-
----
-
-# Summary
-
-This system is designed around:
-- Real-time constraints
-- Deployment practicality
-- Analytical usefulness
-- Scalable architecture
-
-The goal is not maximum benchmark accuracy.
-The goal is reliable, interpretable, deployable activity analytics.
+1. **Multi-camera integration:** Merge activity counts across cameras with cross-camera identity tracking
+2. **Edge deployment:** Evaluate model on embedded GPUs or inference accelerators
+3. **API/Dashboard:** Real-time reporting of engagement metrics for teachers and parents
+4. **Activity extension:** Add composite activities or fine-grained postures
+5. **Automated evaluation pipeline:** Continuous monitoring for accuracy drop over time
